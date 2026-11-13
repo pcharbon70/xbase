@@ -267,7 +267,7 @@ defmodule Xbase.CdxParser do
       :leaf ->
         # Leaf nodes: key_length + record_number(4 bytes)
         if byte_size(data) >= key_length + 4 do
-          <<key_data::binary-size(key_length), record_num::little-32, rest::binary>> = data
+          <<key_data::binary-size(^key_length), record_num::little-32, rest::binary>> = data
           parse_keys_and_pointers(rest, remaining_keys - 1, node_type, key_length,
                                  [key_data | keys], [record_num | pointers])
         else
@@ -276,7 +276,7 @@ defmodule Xbase.CdxParser do
       :root ->
         # Root nodes can be leaf or branch - check if it's a leaf root
         if byte_size(data) >= key_length + 4 do
-          <<key_data::binary-size(key_length), ptr::little-32, rest::binary>> = data
+          <<key_data::binary-size(^key_length), ptr::little-32, rest::binary>> = data
           parse_keys_and_pointers(rest, remaining_keys - 1, node_type, key_length,
                                  [key_data | keys], [ptr | pointers])
         else
@@ -285,7 +285,7 @@ defmodule Xbase.CdxParser do
       _ ->
         # Branch nodes: key_length + child_pointer(4 bytes)
         if byte_size(data) >= key_length + 4 do
-          <<key_data::binary-size(key_length), child_ptr::little-32, rest::binary>> = data
+          <<key_data::binary-size(^key_length), child_ptr::little-32, rest::binary>> = data
           parse_keys_and_pointers(rest, remaining_keys - 1, node_type, key_length,
                                  [key_data | keys], [child_ptr | pointers])
         else

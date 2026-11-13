@@ -137,7 +137,6 @@ defmodule MemoryEfficientProcessing do
     result = 
       dbf
       |> Xbase.Parser.stream_records()
-      |> Stream.reject(fn record -> record.deleted end)
       |> Stream.map(processor_fn)
       |> Stream.chunk_every(1000)  # Process in chunks
       |> Stream.map(&consolidate_chunk/1)
@@ -351,14 +350,14 @@ defmodule OptimizedQueries do
   defp matches_criteria?(record, criteria) do
     case criteria do
       %{exact_match: field, value: value} ->
-        record.data[field] == value
+        record[field] == value
         
       %{range_query: field, min_value: min_val, max_value: max_val} ->
-        field_value = record.data[field]
+        field_value = record[field]
         field_value >= min_val and field_value <= max_val
         
       %{starts_with: field, prefix: prefix} ->
-        field_value = record.data[field] || ""
+        field_value = record[field] || ""
         String.starts_with?(field_value, prefix)
     end
   end
@@ -377,7 +376,6 @@ defmodule ParallelProcessing do
     
     dbf
     |> Xbase.Parser.stream_records()
-    |> Stream.reject(fn record -> record.deleted end)
     |> Stream.chunk_every(chunk_size)
     |> Task.async_stream(
       fn chunk -> parallel_process_chunk(chunk, transform_fn) end,
@@ -690,7 +688,7 @@ defmodule MemoPrefetcher do
   end
   
   defp extract_memo_refs(record) do
-    record.data
+    record
     |> Enum.filter(fn {_field, value} -> match?({:memo_ref, _}, value) end)
     |> Enum.map(fn {_field, {:memo_ref, block_num}} -> block_num end)
     |> Enum.filter(&(&1 > 0))
@@ -785,9 +783,9 @@ defmodule PerformanceBenchmark do
   end
   
   defp benchmark_operation(dbf, :search) do
-    # Benchmark linear search
-    search_fn = fn record -> 
-      record.data["ID"] != nil and not record.deleted
+    # Benchmark linear search (stream_records/1 already skips deleted records)
+    search_fn = fn record ->
+      record["ID"] != nil
     end
     
     {time_micro, results} = :timer.tc(fn ->

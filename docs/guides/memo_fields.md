@@ -233,9 +233,9 @@ summary =
   |> Stream.map(fn record -> 
     # Only extract non-memo fields for summary
     %{
-      id: record.data["ID"],
-      title: record.data["TITLE"],
-      has_content: match?({:memo_ref, n} when n > 0, record.data["CONTENT"])
+      id: record["ID"],
+      title: record["TITLE"],
+      has_content: match?({:memo_ref, n} when n > 0, record["CONTENT"])
     }
   end)
   |> Enum.to_list()
@@ -336,7 +336,7 @@ defmodule MemoRecovery do
          {:ok, dbt} <- Xbase.DbtParser.open_dbt(dbt_path) do
       
       # Validate all memo references
-      records = Xbase.Parser.read_all_records(dbf)
+      {:ok, records} = Xbase.Parser.read_records(dbf)
       
       invalid_refs = 
         records
@@ -357,7 +357,7 @@ defmodule MemoRecovery do
   end
   
   defp validate_memo_refs(record, index, dbt) do
-    record.data
+    record
     |> Enum.flat_map(fn {field_name, value} ->
       case value do
         {:memo_ref, block_num} when block_num > 0 ->

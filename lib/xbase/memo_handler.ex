@@ -10,6 +10,9 @@ defmodule Xbase.MemoHandler do
   alias Xbase.DbtParser
   alias Xbase.DbtWriter
   alias Xbase.Types.DbtFile
+  alias Xbase.CodePage
+  alias Xbase.FptParser
+  alias Xbase.Types.FptFile
 
   defstruct [:dbf, :dbt, :dbf_path, :dbt_path, :memo_mode]
 
@@ -268,9 +271,11 @@ defmodule Xbase.MemoHandler do
     # Close DBF file
     Parser.close_dbf(handler.dbf)
     
-    # Close DBT file if present
-    if handler.dbt do
-      DbtWriter.close_dbt(handler.dbt)
+    # Close the memo file if present
+    case handler.dbt do
+      nil -> :ok
+      %FptFile{} = fpt -> FptParser.close_fpt(fpt)
+      dbt -> DbtWriter.close_dbt(dbt)
     end
     
     :ok
@@ -324,13 +329,22 @@ defmodule Xbase.MemoHandler do
   # Private helper functions
 
   defp has_memo_support?(%{header: header}) do
-    # Check if DBF version supports memo fields
-    header.version in [0x83, 0x8B, 0xF5]
+    # dBase/FoxPro versions with memo, or a Visual FoxPro table whose table
+    # flags byte (parsed as mdx_flag) has the "has memo" bit 0x02 set.
+    header.version in [0x83, 0x8B, 0xF5] or
+      (header.version in [0x30, 0x31, 0x32] and Bitwise.band(header.mdx_flag || 0, 0x02) != 0)
   end
 
   defp discover_dbt_path(dbf_path) do
-    replace_extension(dbf_path, ".dbt")
+    # Visual FoxPro memo files use the .fpt extension; prefer one that exists.
+    Enum.find(
+      [replace_extension(dbf_path, ".fpt"), replace_extension(dbf_path, ".FPT")],
+      replace_extension(dbf_path, ".dbt"),
+      &File.exists?/1
+    )
   end
+
+  defp fpt_path?(path), do: String.downcase(Path.extname(path)) == ".fpt"
 
   defp replace_extension(path, new_ext) do
     Path.rootname(path) <> new_ext
@@ -338,7 +352,34 @@ defmodule Xbase.MemoHandler do
 
   defp open_memo_file(dbf, dbf_path, dbt_path, modes, memo_mode) do
     write_mode = :write in modes
-    
+
+    cond do
+      fpt_path?(dbt_path) and write_mode ->
+        Parser.close_dbf(dbf)
+        {:error, :fpt_write_not_supported}
+
+      fpt_path?(dbt_path) ->
+        case FptParser.open_fpt(dbt_path) do
+          {:ok, fpt} ->
+            {:ok, %__MODULE__{
+              dbf: dbf,
+              dbt: fpt,
+              dbf_path: dbf_path,
+              dbt_path: dbt_path,
+              memo_mode: memo_mode
+            }}
+
+          {:error, reason} ->
+            Parser.close_dbf(dbf)
+            {:error, {:dbt_open_failed, reason}}
+        end
+
+      true ->
+        open_dbt_memo_file(dbf, dbf_path, dbt_path, write_mode, memo_mode)
+    end
+  end
+
+  defp open_dbt_memo_file(dbf, dbf_path, dbt_path, write_mode, memo_mode) do
     case File.exists?(dbt_path) do
       true ->
         # DBT file exists, open it
@@ -415,7 +456,11 @@ defmodule Xbase.MemoHandler do
     case Map.get(record_data, field_name) do
       content when is_binary(content) ->
         # Write memo content and get block reference
-        case DbtWriter.write_memo(handler.dbt, content) do
+        case encode_memo(handler, content)
+             |> then(fn
+               {:ok, stored} -> DbtWriter.write_memo(handler.dbt, stored)
+               error -> error
+             end) do
           {:ok, {block_number, updated_dbt}} ->
             updated_handler = %{handler | dbt: updated_dbt}
             updated_processed = Map.put(processed_data, field_name, {:memo_ref, block_number})
@@ -455,7 +500,11 @@ defmodule Xbase.MemoHandler do
       content when is_binary(content) ->
         # Check if we can reuse existing block
         existing_ref = Map.get(existing_record, field_name)
-        case reuse_or_create_memo_block(handler, existing_ref, content) do
+        case encode_memo(handler, content)
+             |> then(fn
+               {:ok, stored} -> reuse_or_create_memo_block(handler, existing_ref, stored)
+               error -> error
+             end) do
           {:ok, {memo_ref, updated_handler}} ->
             updated_processed = Map.put(processed_data, field_name, memo_ref)
             process_memo_update_fields_recursive(updated_handler, existing_record, update_data, rest, updated_processed)
@@ -516,8 +565,9 @@ defmodule Xbase.MemoHandler do
     case Map.get(record_data, field_name) do
       {:memo_ref, block_number} when block_number > 0 ->
         # Resolve memo reference to content
-        case DbtParser.read_memo(handler.dbt, block_number) do
+        case read_memo(handler.dbt, block_number) do
           {:ok, content} ->
+            content = CodePage.decode(content, memo_encoding(handler))
             updated_resolved = Map.put(resolved_data, field_name, content)
             resolve_memo_content_recursive(handler, record_data, rest, updated_resolved)
           {:error, reason} ->
@@ -532,6 +582,13 @@ defmodule Xbase.MemoHandler do
         resolve_memo_content_recursive(handler, record_data, rest, resolved_data)
     end
   end
+
+  defp memo_encoding(%__MODULE__{dbf: dbf}), do: Map.get(dbf, :encoding, :raw)
+
+  defp encode_memo(handler, content), do: CodePage.encode(content, memo_encoding(handler))
+
+  defp read_memo(%FptFile{} = fpt, block_number), do: FptParser.read_memo(fpt, block_number)
+  defp read_memo(dbt, block_number), do: DbtParser.read_memo(dbt, block_number)
 
   defp get_memo_fields(%{fields: fields}) do
     fields

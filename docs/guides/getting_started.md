@@ -9,7 +9,7 @@ Add Xbase to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:xbase, "~> 0.1.0"}
+    {:xbase, "~> 0.2.0"}
   ]
 end
 ```
@@ -104,8 +104,8 @@ For large files, use streaming to avoid loading everything into memory:
 active_customers = 
   dbf
   |> Xbase.Parser.stream_records()
-  |> Stream.filter(fn record -> record.data["ACTIVE"] == true end)
-  |> Stream.map(fn record -> record.data["NAME"] end)
+  |> Stream.filter(fn record -> record["ACTIVE"] == true end)
+  |> Stream.map(fn record -> record["NAME"] end)
   |> Enum.to_list()
 
 IO.puts("Active customers: #{length(active_customers)}")
@@ -255,8 +255,7 @@ defmodule DataProcessor do
       results = 
         dbf
         |> Xbase.Parser.stream_records()
-        |> Stream.reject(fn record -> record.deleted end)
-        |> Stream.map(fn record -> process_customer(record.data) end)
+        |> Stream.map(fn record -> process_customer(record) end)
         |> Enum.to_list()
       
       Xbase.Parser.close_dbf(dbf)
@@ -279,8 +278,7 @@ defmodule ReportGenerator do
       distribution = 
         dbf
         |> Xbase.Parser.stream_records()
-        |> Stream.reject(fn record -> record.deleted end)
-        |> Stream.map(fn record -> record.data["AGE"] end)
+        |> Stream.map(fn record -> record["AGE"] end)
         |> Enum.frequencies()
       
       Xbase.Parser.close_dbf(dbf)
@@ -308,9 +306,8 @@ defmodule DataMigration do
       final_dbf = 
         source_dbf
         |> Xbase.Parser.stream_records()
-        |> Stream.reject(fn record -> record.deleted end)
         |> Enum.reduce(target_dbf, fn record, acc_dbf ->
-          transformed = transform_record(record.data)
+          transformed = transform_record(record)
           {:ok, new_dbf} = Xbase.Parser.append_record(acc_dbf, transformed)
           new_dbf
         end)
