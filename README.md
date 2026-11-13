@@ -13,6 +13,10 @@ Built for performance, reliability, and ease of use, Xbase provides a complete s
 ### 🗃️ **Complete dBase Support**
 - **File Formats**: dBase III, IV, 5, FoxPro, and Visual FoxPro compatibility
 - **Field Types**: Character (C), Numeric (N), Date (D), Logical (L), and Memo (M)
+- **Visual FoxPro (read)**: Currency (Y), Double (B), Integer (I), DateTime (T), General (G),
+  `_NullFlags`, and FPT memo files
+- **Code Pages**: Text is converted between the table's code page (Windows-1252,
+  DOS 437/850) and UTF-8 automatically
 - **File Operations**: Create, read, update, delete, and pack operations
 - **Binary Parsing**: High-performance binary pattern matching
 
@@ -41,7 +45,7 @@ Add `xbase` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:xbase, "~> 0.1.0"}
+    {:xbase, "~> 0.2.0"}
   ]
 end
 ```
@@ -63,18 +67,57 @@ mix deps.get
 {:ok, record} = Xbase.Parser.read_record(dbf, 0)
 # => %Xbase.Types.Record{data: %{"NAME" => "John Doe", "AGE" => 30}, deleted: false}
 
-# Read all records
+# Read all active (non-deleted) records as field maps
 {:ok, records} = Xbase.Parser.read_records(dbf)
+# => [%{"NAME" => "John Doe", "AGE" => 30}, ...]
 
-# Stream records for memory efficiency
+# Stream active records (field maps) for memory efficiency
 dbf
 |> Xbase.Parser.stream_records()
-|> Stream.filter(fn record -> record.data["AGE"] > 25 end)
+|> Stream.filter(fn record -> record["AGE"] > 25 end)
 |> Enum.to_list()
 
 # Don't forget to close
 Xbase.Parser.close_dbf(dbf)
 ```
+
+### Code Pages and Visual FoxPro Tables
+
+Text in `C` and memo fields is decoded from the table's code page (the
+language driver byte in the header) to UTF-8 when reading, and encoded back
+when writing. Supported code pages are Windows-1252 (`0x03`, `0x57`), DOS 437
+(`0x01`) and DOS 850 (`0x02`); tables without a code page are left untouched.
+
+```elixir
+# "Québec" stored as Windows-1252 is returned as a UTF-8 string
+{:ok, dbf} = Xbase.Parser.open_dbf("vendors.dbf")
+{:ok, record} = Xbase.Parser.read_record(dbf, 0)
+record.data["CITY"]
+# => "Québec"
+
+# Override the header, or keep the stored bytes as they are
+{:ok, dbf} = Xbase.Parser.open_dbf("legacy.dbf", [:read], encoding: :cp850)
+{:ok, dbf} = Xbase.Parser.open_dbf("legacy.dbf", [:read], encoding: :raw)
+```
+
+Writing a character the code page cannot represent returns
+`{:error, {:unencodable, field_name, char}}` instead of storing UTF-8 bytes.
+
+Visual FoxPro tables can be read, including their binary field types:
+
+| Type | Returned as |
+|------|-------------|
+| `Y` currency | `Decimal` with 4 decimal places |
+| `B` double | float |
+| `I` integer | integer |
+| `T` datetime | `DateTime` (UTC) |
+| `M`, `G` memo/general | `{:memo_ref, block}`, or `nil` when empty |
+| `_NullFlags` | raw bytes |
+
+`Xbase.MemoHandler.open_dbf_with_memo/3` finds the table's `.fpt` memo file
+and returns memo text as UTF-8. FPT memo files and the VFP binary types are
+read-only for now: opening an FPT table for writing returns
+`{:error, :fpt_write_not_supported}`.
 
 ### Writing DBF Files
 

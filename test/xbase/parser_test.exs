@@ -2884,7 +2884,6 @@ defmodule Xbase.ParserTest do
       sample_records = 
         dbf
         |> Parser.stream_records()
-        |> Stream.reject(fn record -> record.deleted end)
         |> Stream.take(1000)
         |> Enum.to_list()
       
@@ -2896,8 +2895,9 @@ defmodule Xbase.ParserTest do
       
       # Verify record structure
       sample_record = List.first(sample_records)
-      assert %Record{} = sample_record
-      assert is_map(sample_record.data)
+      # stream_records/1 yields plain field maps (see notes/fixes/003)
+      assert is_map(sample_record)
+      refute is_struct(sample_record)
       
       # Memory should not grow excessively for streaming
       assert memory_growth < 50_000_000  # Less than 50MB growth
@@ -2918,8 +2918,8 @@ defmodule Xbase.ParserTest do
         # Validate character field
         sono = record.data["SONO"]
         assert is_binary(sono) or is_nil(sono)
-        
-        # Validate integer fields  
+
+        # Validate integer fields
         skidno = record.data["SKIDNO"]
         rollno = record.data["ROLLNO"]
         assert is_integer(skidno) or is_nil(skidno)
@@ -2938,7 +2938,7 @@ defmodule Xbase.ParserTest do
         # Validate logical field
         kilos = record.data["KILOS"]
         assert is_boolean(kilos) or is_nil(kilos)
-        
+
         # Validate datetime field (if we support it)
         date = record.data["DATE"]
         # Note: Might need to implement "T" type support
@@ -2956,19 +2956,18 @@ defmodule Xbase.ParserTest do
       stats = 
         dbf
         |> Parser.stream_records()
-        |> Stream.reject(fn record -> record.deleted end)
         |> Stream.take(5000)  # Sample first 5000 records
         |> Enum.reduce(
           %{total_records: 0, non_null_weights: 0, peso_sum: 0, deleted_count: 0},
           fn record, acc ->
-            weight = record.data["WEIGHT"]
+            weight = record["WEIGHT"]
             
             %{
               acc |
               total_records: acc.total_records + 1,
               non_null_weights: if(weight && weight > 0, do: acc.non_null_weights + 1, else: acc.non_null_weights),
               peso_sum: acc.peso_sum + (weight || 0),
-              deleted_count: if(record.deleted, do: acc.deleted_count + 1, else: acc.deleted_count)
+              deleted_count: acc.deleted_count
             }
           end
         )

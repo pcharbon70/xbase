@@ -93,6 +93,17 @@ defmodule Xbase.FieldParser do
     end
   end
 
+  def parse(%FieldDescriptor{type: type, length: 4} = _field_desc, binary_data)
+      when type in ["M", "G"] do
+    # Visual FoxPro memo (M) and general (G) fields: 4-byte little-endian
+    # block number in the FPT file; 0 means no memo.
+    case binary_data do
+      <<0::little-32>> -> {:ok, nil}
+      <<block_number::little-32>> -> {:ok, {:memo_ref, block_number}}
+      _ -> {:error, :invalid_memo_reference}
+    end
+  end
+
   def parse(%FieldDescriptor{type: "M"} = _field_desc, binary_data) do
     # Memo field: reference to memo block
     trimmed = String.trim(binary_data)
@@ -104,6 +115,15 @@ defmodule Xbase.FieldParser do
           {block_number, ""} -> {:ok, {:memo_ref, block_number}}
           _ -> {:ok, nil}  # Invalid memo reference treated as empty
         end
+    end
+  end
+
+  def parse(%FieldDescriptor{type: "I", length: 4} = _field_desc, binary_data) do
+    # Visual FoxPro integer: always a 4-byte little-endian signed integer.
+    # Its bytes can look like text (for example "   1"), so never parse as text.
+    case binary_data do
+      <<value::little-signed-32>> -> {:ok, value}
+      _ -> {:error, :invalid_integer_size}
     end
   end
 
@@ -174,10 +194,35 @@ defmodule Xbase.FieldParser do
     end
   end
 
+  def parse(%FieldDescriptor{type: "Y"} = _field_desc, binary_data) do
+    # Visual FoxPro currency: 8-byte little-endian signed integer holding the
+    # amount multiplied by 10,000. Returned as an exact Decimal with 4 places.
+    case binary_data do
+      <<value::little-signed-64>> -> {:ok, Decimal.new(sign(value), abs(value), -4)}
+      _ -> {:error, :invalid_currency_size}
+    end
+  end
+
+  def parse(%FieldDescriptor{type: "B"} = _field_desc, binary_data) do
+    # Visual FoxPro double: 8-byte little-endian IEEE 754 float.
+    case binary_data do
+      <<value::little-float-64>> -> {:ok, value}
+      _ -> {:error, :invalid_double_size}
+    end
+  end
+
+  def parse(%FieldDescriptor{type: "0"} = _field_desc, binary_data) do
+    # Visual FoxPro _NullFlags system field: a bit mask, returned as raw bytes.
+    {:ok, binary_data}
+  end
+
   def parse(%FieldDescriptor{type: _type} = _field_desc, _binary_data) do
     # Unknown field type
     {:error, :unknown_field_type}
   end
+
+  defp sign(value) when value < 0, do: -1
+  defp sign(_value), do: 1
 
   # Helper function to convert Julian day number to date
   defp julian_to_date(julian_day) do

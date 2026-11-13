@@ -109,6 +109,26 @@ defmodule Xbase.Types do
     }
   end
 
+  defmodule FptFile do
+    @moduledoc """
+    An opened Visual FoxPro FPT memo file (read-only).
+    """
+
+    defstruct [
+      :file,       # File handle from :file.open
+      :file_path,  # Path to the FPT file
+      :next_block, # Next free block number from the header
+      :block_size  # Block size in bytes from the header
+    ]
+
+    @type t :: %__MODULE__{
+      file: :file.io_device(),
+      file_path: String.t(),
+      next_block: non_neg_integer(),
+      block_size: pos_integer()
+    }
+  end
+
   defmodule DbtFile do
     @moduledoc """
     DBT file structure containing header information and file handle.

@@ -33,8 +33,7 @@ record_stream = Xbase.Parser.stream_records(dbf)
 # Process records one at a time
 results = 
   record_stream
-  |> Stream.reject(fn record -> record.deleted end)
-  |> Stream.map(fn record -> process_record(record.data) end)
+  |> Stream.map(fn record -> process_record(record) end)
   |> Enum.to_list()
 
 Xbase.Parser.close_dbf(dbf)
@@ -49,16 +48,15 @@ Xbase.Parser.close_dbf(dbf)
 active_customers = 
   dbf
   |> Xbase.Parser.stream_records()
-  |> Stream.reject(fn record -> record.deleted end)
   |> Stream.filter(fn record -> 
-    record.data["ACTIVE"] == true and
-    record.data["STATE"] in ["CA", "NY", "TX"]
+    record["ACTIVE"] == true and
+    record["STATE"] in ["CA", "NY", "TX"]
   end)
   |> Stream.map(fn record -> 
     %{
-      name: record.data["NAME"],
-      email: record.data["EMAIL"],
-      state: record.data["STATE"]
+      name: record["NAME"],
+      email: record["EMAIL"],
+      state: record["STATE"]
     }
   end)
   |> Enum.to_list()
@@ -76,8 +74,7 @@ Xbase.Parser.close_dbf(dbf)
 category_counts = 
   dbf
   |> Xbase.Parser.stream_records()
-  |> Stream.reject(fn record -> record.deleted end)
-  |> Stream.map(fn record -> record.data["CATEGORY"] end)
+  |> Stream.map(fn record -> record["CATEGORY"] end)
   |> Enum.frequencies()
 
 IO.inspect(category_counts)
@@ -93,7 +90,6 @@ defmodule ChunkedProcessor do
   def process_in_chunks(dbf, chunk_size \\ 1000) do
     dbf
     |> Xbase.Parser.stream_records()
-    |> Stream.reject(fn record -> record.deleted end)
     |> Stream.chunk_every(chunk_size)
     |> Stream.map(&process_chunk/1)
     |> Enum.to_list()
@@ -112,8 +108,8 @@ defmodule ChunkedProcessor do
   
   defp transform_record(record) do
     %{
-      name: String.upcase(record.data["NAME"]),
-      email: String.downcase(record.data["EMAIL"]),
+      name: String.upcase(record["NAME"]),
+      email: String.downcase(record["EMAIL"]),
       processed_at: DateTime.utc_now()
     }
   end
@@ -127,14 +123,12 @@ defmodule EarlyTermination do
   def find_first_match(dbf, condition_fn) do
     dbf
     |> Xbase.Parser.stream_records()
-    |> Stream.reject(fn record -> record.deleted end)
     |> Enum.find(condition_fn)
   end
   
   def take_sample(dbf, sample_size) do
     dbf
     |> Xbase.Parser.stream_records()
-    |> Stream.reject(fn record -> record.deleted end)
     |> Stream.take(sample_size)
     |> Enum.to_list()
   end
@@ -142,7 +136,6 @@ defmodule EarlyTermination do
   def process_until_condition(dbf, stop_condition) do
     dbf
     |> Xbase.Parser.stream_records()
-    |> Stream.reject(fn record -> record.deleted end)
     |> Stream.take_while(fn record -> not stop_condition.(record) end)
     |> Stream.map(&process_record/1)
     |> Enum.to_list()
@@ -150,7 +143,7 @@ defmodule EarlyTermination do
   
   defp process_record(record) do
     # Your processing logic here
-    record.data
+    record
   end
 end
 ```
@@ -162,7 +155,6 @@ defmodule ParallelStreaming do
   def parallel_process(dbf, concurrency \\ System.schedulers_online()) do
     dbf
     |> Xbase.Parser.stream_records()
-    |> Stream.reject(fn record -> record.deleted end)
     |> Stream.chunk_every(100)  # Process in batches
     |> Task.async_stream(
       &process_batch/1,
@@ -185,8 +177,8 @@ defmodule ParallelStreaming do
   defp transform_record(record) do
     # Your transformation logic
     %{
-      id: record.data["ID"],
-      processed_data: process_field(record.data["DATA"])
+      id: record["ID"],
+      processed_data: process_field(record["DATA"])
     }
   end
   
@@ -209,7 +201,6 @@ defmodule LargeFileAnalytics do
     analytics = 
       dbf
       |> Xbase.Parser.stream_records()
-      |> Stream.reject(fn record -> record.deleted end)
       |> Stream.map(&extract_sales_data/1)
       |> Enum.reduce(initial_analytics(), &update_analytics/2)
     
@@ -219,10 +210,10 @@ defmodule LargeFileAnalytics do
   
   defp extract_sales_data(record) do
     %{
-      amount: record.data["AMOUNT"] || 0,
-      date: record.data["SALE_DATE"],
-      region: record.data["REGION"],
-      product: record.data["PRODUCT"]
+      amount: record["AMOUNT"] || 0,
+      date: record["SALE_DATE"],
+      region: record["REGION"],
+      product: record["PRODUCT"]
     }
   end
   
@@ -281,7 +272,6 @@ defmodule DataMigration do
     migration_stats = 
       dbf
       |> Xbase.Parser.stream_records()
-      |> Stream.reject(fn record -> record.deleted end)
       |> Stream.map(&transform_for_database/1)
       |> Stream.chunk_every(500)  # Insert in batches
       |> Stream.with_index()
@@ -303,14 +293,14 @@ defmodule DataMigration do
   
   defp transform_for_database(record) do
     %{
-      external_id: record.data["ID"],
-      name: record.data["NAME"],
-      email: record.data["EMAIL"],
-      phone: record.data["PHONE"],
-      address: record.data["ADDRESS"],
-      city: record.data["CITY"],
-      state: record.data["STATE"],
-      zip: record.data["ZIP"],
+      external_id: record["ID"],
+      name: record["NAME"],
+      email: record["EMAIL"],
+      phone: record["PHONE"],
+      address: record["ADDRESS"],
+      city: record["CITY"],
+      state: record["STATE"],
+      zip: record["ZIP"],
       created_at: DateTime.utc_now(),
       updated_at: DateTime.utc_now()
     }
@@ -340,19 +330,18 @@ defmodule MemoStreaming do
     results = 
       handler.dbf
       |> Xbase.Parser.stream_records()
-      |> Stream.reject(fn record -> record.deleted end)
       |> Stream.map(fn record ->
         # Only load memo content when certain conditions are met
         if needs_memo_content?(record) do
           # Load full record with memo content
           {:ok, full_record} = Xbase.MemoHandler.read_record_with_memo(
             handler, 
-            record.data["_record_index"] || 0
+            record["_record_index"] || 0
           )
           process_with_memo(full_record)
         else
           # Process without loading memo content
-          process_without_memo(record.data)
+          process_without_memo(record)
         end
       end)
       |> Enum.to_list()
@@ -363,8 +352,8 @@ defmodule MemoStreaming do
   
   defp needs_memo_content?(record) do
     # Only load memo content for high-priority records
-    record.data["PRIORITY"] == "HIGH" or
-    record.data["STATUS"] == "REVIEW_REQUIRED"
+    record["PRIORITY"] == "HIGH" or
+    record["STATUS"] == "REVIEW_REQUIRED"
   end
   
   defp process_with_memo(record_data) do
@@ -401,7 +390,6 @@ defmodule StreamOptimization do
     result = 
       dbf
       |> Xbase.Parser.stream_records()
-      |> Stream.reject(fn record -> record.deleted end)
       |> Stream.chunk_every(chunk_size)
       |> Stream.map(&process_chunk_optimized/1)
       |> Enum.reduce([], &combine_results/2)
@@ -419,9 +407,9 @@ defmodule StreamOptimization do
   
   defp extract_key_data(record) do
     %{
-      id: record.data["ID"],
-      category: record.data["CATEGORY"],
-      amount: record.data["AMOUNT"] || 0
+      id: record["ID"],
+      category: record["CATEGORY"],
+      amount: record["AMOUNT"] || 0
     }
   end
   
@@ -480,7 +468,7 @@ defmodule MemoryMonitor do
   
   defp process_record(record) do
     # Your processing logic here
-    record.data["ID"]
+    record["ID"]
   end
 end
 ```
@@ -497,7 +485,6 @@ defmodule ResilientStreaming do
     {successes, errors} = 
       dbf
       |> Xbase.Parser.stream_records()
-      |> Stream.reject(fn record -> record.deleted end)
       |> Stream.with_index()
       |> Stream.map(&safe_process_record/1)
       |> Enum.split_with(fn {status, _} -> status == :ok end)
@@ -544,22 +531,22 @@ defmodule ResilientStreaming do
     
     missing_fields = 
       required_fields
-      |> Enum.filter(fn field -> is_nil(record.data[field]) or record.data[field] == "" end)
+      |> Enum.filter(fn field -> is_nil(record[field]) or record[field] == "" end)
     
     if length(missing_fields) > 0 do
       throw("Missing required fields: #{Enum.join(missing_fields, ", ")}")
     end
     
     # Validate email format
-    if not valid_email?(record.data["EMAIL"]) do
-      throw("Invalid email format: #{record.data["EMAIL"]}")
+    if not valid_email?(record["EMAIL"]) do
+      throw("Invalid email format: #{record["EMAIL"]}")
     end
     
     # Process the record
     %{
-      id: record.data["ID"],
-      name: String.trim(record.data["NAME"]),
-      email: String.downcase(record.data["EMAIL"])
+      id: record["ID"],
+      name: String.trim(record["NAME"]),
+      email: String.downcase(record["EMAIL"])
     }
   end
   
@@ -634,7 +621,6 @@ defmodule BackpressureHandling do
     
     dbf
     |> Xbase.Parser.stream_records()
-    |> Stream.reject(fn record -> record.deleted end)
     |> Stream.chunk_every(100)
     |> Task.async_stream(
       &process_batch/1,
@@ -659,7 +645,7 @@ defmodule BackpressureHandling do
   defp process_single_record(record) do
     # Your processing logic here
     :timer.sleep(:rand.uniform(10))  # Simulate variable processing time
-    record.data["ID"]
+    record["ID"]
   end
 end
 ```

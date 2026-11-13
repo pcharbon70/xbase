@@ -6,6 +6,7 @@ defmodule Xbase.Parser do
   from binary data using Elixir's efficient binary pattern matching.
   """
 
+  alias Xbase.CodePage
   alias Xbase.Types.{Header, FieldDescriptor, Record}
 
   @doc """
@@ -90,6 +91,11 @@ defmodule Xbase.Parser do
 
   @doc """
   Opens a DBF file and parses its header and field descriptors with specified file modes.
+
+  Character and memo text is converted between the table's code page and
+  UTF-8. The code page comes from the header's language driver byte (see
+  `Xbase.CodePage`); pass `encoding: :raw | :cp1252 | :cp437 | :cp850` to
+  override it, where `:raw` leaves bytes untouched.
   
   ## Parameters
   - `path` - Path to the DBF file
@@ -99,7 +105,15 @@ defmodule Xbase.Parser do
   - `{:ok, %{header: header, fields: fields, file: file}}` - Successfully opened DBF
   - `{:error, reason}` - Error opening or parsing file
   """
-  def open_dbf(path, modes) do
+  def open_dbf(path, modes, opts \\ []) do
+    case Keyword.get(opts, :encoding) do
+      nil -> do_open_dbf(path, modes, nil)
+      encoding when encoding in [:raw, :cp1252, :cp437, :cp850] -> do_open_dbf(path, modes, encoding)
+      other -> {:error, {:invalid_encoding, other}}
+    end
+  end
+
+  defp do_open_dbf(path, modes, encoding_override) do
     file_modes = modes ++ [:binary, :random]
     
     # Capture initial file modification time for conflict detection
@@ -114,7 +128,8 @@ defmodule Xbase.Parser do
           {:ok, header} ->
             case read_and_parse_fields(file, header) do
               {:ok, fields} ->
-                {:ok, %{header: header, fields: fields, file: file, file_path: path, initial_mtime: initial_mtime}}
+                encoding = encoding_override || CodePage.from_language_driver(header.language_driver)
+                {:ok, %{header: header, fields: fields, file: file, file_path: path, initial_mtime: initial_mtime, encoding: encoding}}
               {:error, reason} ->
                 :file.close(file)
                 {:error, reason}
@@ -241,7 +256,7 @@ defmodule Xbase.Parser do
       iex> record.data["NAME"]
       "John Doe"
   """
-  def read_record(%{header: header, fields: fields, file: file}, record_index) do
+  def read_record(%{header: header, fields: fields, file: file} = dbf, record_index) do
     # Validate record index
     case is_valid_record_index?(header, record_index) do
       false ->
@@ -261,7 +276,7 @@ defmodule Xbase.Parser do
                 case parse_record_data(field_data, fields) do
                   {:ok, parsed_data} ->
                     record = %Record{
-                      data: parsed_data,
+                      data: decode_text_fields(parsed_data, fields, encoding(dbf)),
                       deleted: deleted,
                       raw_data: record_binary
                     }
@@ -309,7 +324,7 @@ defmodule Xbase.Parser do
               _ -> nil
             end
             
-            {:ok, %{header: header, fields: fields, file: file, file_path: path, initial_mtime: initial_mtime}}
+            {:ok, %{header: header, fields: fields, file: file, file_path: path, initial_mtime: initial_mtime, encoding: CodePage.from_language_driver(header.language_driver)}}
           {:error, reason} ->
             {:error, reason}
         end
@@ -335,7 +350,11 @@ defmodule Xbase.Parser do
   """
   def append_record(%{header: header, fields: fields, file: file} = dbf, record_data) do
     # Encode the record data
-    case encode_record(fields, record_data) do
+    case encode_text_fields(fields, record_data, encoding(dbf))
+         |> then(fn
+           {:ok, record_data} -> encode_record(fields, record_data)
+           error -> error
+         end) do
       {:ok, encoded_record} ->
         # Calculate where to write the new record
         offset = calculate_record_offset(header, header.record_count)
@@ -415,7 +434,11 @@ defmodule Xbase.Parser do
             merged_data = Map.merge(existing_record.data, update_data)
             
             # Encode the updated record
-            case encode_record_with_deletion_flag(fields, merged_data, existing_record.deleted) do
+            case encode_text_fields(fields, merged_data, encoding(dbf))
+                 |> then(fn
+                   {:ok, merged_data} -> encode_record_with_deletion_flag(fields, merged_data, existing_record.deleted)
+                   error -> error
+                 end) do
               {:ok, encoded_record} ->
                 # Calculate where to write the updated record
                 offset = calculate_record_offset(header, record_index)
@@ -515,7 +538,7 @@ defmodule Xbase.Parser do
     case collect_active_records(dbf) do
       {:ok, active_records} ->
         # Create a new packed file with the active records
-        case create_packed_file(output_path, fields, active_records, header) do
+        case create_packed_file(output_path, fields, active_records, header, encoding(dbf)) do
           {:ok, packed_dbf} ->
             {:ok, packed_dbf}
           {:error, reason} ->
@@ -714,7 +737,11 @@ defmodule Xbase.Parser do
 
   def batch_append_records(%{header: header, fields: fields, file: file} = dbf, records) when is_list(records) do
     # Encode all records first to validate them
-    case batch_encode_records(fields, records) do
+    case encode_text_records(fields, records, encoding(dbf))
+         |> then(fn
+           {:ok, records} -> batch_encode_records(fields, records)
+           error -> error
+         end) do
       {:ok, encoded_records} ->
         # Calculate starting offset for new records
         start_offset = calculate_record_offset(header, header.record_count)
@@ -842,7 +869,7 @@ defmodule Xbase.Parser do
       iex> Xbase.Parser.refresh_dbf_state(dbf)
       {:ok, refreshed_dbf}
   """
-  def refresh_dbf_state(%{file: file, file_path: file_path} = _dbf) do
+  def refresh_dbf_state(%{file: file, file_path: file_path} = dbf) do
     # Seek to beginning of file
     :file.position(file, 0)
     
@@ -856,7 +883,7 @@ defmodule Xbase.Parser do
               _ -> nil
             end
             
-            {:ok, %{header: header, fields: fields, file: file, file_path: file_path, initial_mtime: initial_mtime}}
+            {:ok, %{header: header, fields: fields, file: file, file_path: file_path, initial_mtime: initial_mtime, encoding: encoding(dbf)}}
           {:error, reason} ->
             {:error, reason}
         end
@@ -1182,7 +1209,7 @@ defmodule Xbase.Parser do
     field_length = field.length
     
     case data do
-      <<_::binary-size(offset), field_data::binary-size(field_length), _::binary>> ->
+      <<_::binary-size(^offset), field_data::binary-size(^field_length), _::binary>> ->
         case Xbase.FieldParser.parse(field, field_data) do
           {:ok, parsed_value} ->
             updated_acc = Map.put(acc, field.name, parsed_value)
@@ -1239,11 +1266,11 @@ defmodule Xbase.Parser do
       {:error, :missing_field_terminator}
     else
       case binary do
-        <<_::binary-size(offset), 0x0D, _::binary>> ->
+        <<_::binary-size(^offset), 0x0D, _::binary>> ->
           {:ok, Enum.reverse(acc)}
         
         _ when offset + 32 <= byte_size(binary) ->
-          <<_::binary-size(offset), field_data::binary-size(32), _rest::binary>> = binary
+          <<_::binary-size(^offset), field_data::binary-size(32), _rest::binary>> = binary
           case parse_single_field(field_data) do
             {:ok, field} ->
               parse_fields_recursive(binary, offset + 32, [field | acc])
@@ -1275,6 +1302,59 @@ defmodule Xbase.Parser do
           set_fields_flag: set_fields_flag,
           index_field_flag: index_field_flag
         }}
+    end
+  end
+
+  defp encoding(dbf), do: Map.get(dbf, :encoding, :raw)
+
+  # Character fields are stored in the table's code page and exposed as UTF-8.
+  defp decode_text_fields(data, _fields, :raw), do: data
+
+  defp decode_text_fields(data, fields, encoding) do
+    Enum.reduce(fields, data, fn
+      %FieldDescriptor{type: "C", name: name}, acc ->
+        case acc do
+          %{^name => value} when is_binary(value) -> %{acc | name => CodePage.decode(value, encoding)}
+          _ -> acc
+        end
+
+      _field, acc ->
+        acc
+    end)
+  end
+
+  defp encode_text_fields(_fields, data, :raw), do: {:ok, data}
+
+  defp encode_text_fields(fields, data, encoding) do
+    Enum.reduce_while(fields, {:ok, data}, fn
+      %FieldDescriptor{type: "C", name: name}, {:ok, acc} ->
+        case acc do
+          %{^name => value} when is_binary(value) ->
+            case CodePage.encode(value, encoding) do
+              {:ok, encoded} -> {:cont, {:ok, %{acc | name => encoded}}}
+              {:error, {:unencodable, char}} -> {:halt, {:error, {:unencodable, name, char}}}
+            end
+
+          _ ->
+            {:cont, {:ok, acc}}
+        end
+
+      _field, ok ->
+        {:cont, ok}
+    end)
+  end
+
+  defp encode_text_records(fields, records, encoding) do
+    records
+    |> Enum.reduce_while({:ok, []}, fn record, {:ok, acc} ->
+      case encode_text_fields(fields, record, encoding) do
+        {:ok, encoded} -> {:cont, {:ok, [encoded | acc]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, encoded} -> {:ok, Enum.reverse(encoded)}
+      error -> error
     end
   end
 
@@ -1444,7 +1524,7 @@ defmodule Xbase.Parser do
     end
   end
 
-  defp create_packed_file(output_path, fields, active_records, original_header) do
+  defp create_packed_file(output_path, fields, active_records, original_header, encoding) do
     # Calculate new record count
     active_count = length(active_records)
     
@@ -1471,7 +1551,11 @@ defmodule Xbase.Parser do
     fields_binary = Enum.join(field_binaries) <> <<0x0D>>
     
     # Encode all active records
-    case encode_all_records(fields, active_records) do
+    case encode_text_records(fields, active_records, encoding)
+         |> then(fn
+           {:ok, active_records} -> encode_all_records(fields, active_records)
+           error -> error
+         end) do
       {:ok, records_binary} ->
         complete_binary = header_binary <> fields_binary <> records_binary
         
@@ -1480,7 +1564,7 @@ defmodule Xbase.Parser do
           {:ok, file} ->
             case :file.write(file, complete_binary) do
               :ok ->
-                {:ok, %{header: packed_header, fields: fields, file: file, file_path: output_path}}
+                {:ok, %{header: packed_header, fields: fields, file: file, file_path: output_path, encoding: encoding}}
               {:error, reason} ->
                 :file.close(file)
                 {:error, reason}
@@ -1621,7 +1705,11 @@ defmodule Xbase.Parser do
         merged_data = Map.merge(current_record.data, update_data)
         
         # Encode the merged record
-        case encode_record(fields, merged_data) do
+        case encode_text_fields(fields, merged_data, encoding(dbf))
+             |> then(fn
+               {:ok, merged_data} -> encode_record(fields, merged_data)
+               error -> error
+             end) do
           {:ok, encoded_record} ->
             # Calculate offset for this record
             offset = calculate_record_offset(dbf.header, index)
@@ -1794,9 +1882,12 @@ defmodule Xbase.Parser do
   def validate_header_consistency(%{header: header, fields: fields, file: file} = _dbf) do
     # Calculate expected header values
     field_count = length(fields)
-    expected_header_length = 32 + (field_count * 32) + 1
+    # Visual FoxPro tables carry a 263-byte database container backlink after
+    # the field terminator.
+    vfp_backlink = if header.version in [0x30, 0x31, 0x32], do: 263, else: 0
+    expected_header_length = 32 + (field_count * 32) + 1 + vfp_backlink
     expected_record_length = 1 + Enum.sum(Enum.map(fields, & &1.length))
-    
+
     # Verify header calculations match
     cond do
       header.header_length != expected_header_length ->

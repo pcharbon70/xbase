@@ -80,40 +80,42 @@ Reads a single record by zero-based index.
 #    }
 ```
 
-#### `read_all_records(dbf, opts \\ [])`
+#### `read_records(dbf)`
 
-Reads all records from the DBF file.
-
-**Parameters:**
-- `dbf` - DBF file handle  
-- `opts` - Options including `:include_deleted`
-
-**Returns:**
-- `[%Record{}]` - List of all records
-
-**Example:**
-```elixir
-records = Xbase.Parser.read_all_records(dbf)
-all_records = Xbase.Parser.read_all_records(dbf, include_deleted: true)
-```
-
-#### `stream_records(dbf, opts \\ [])`
-
-Creates a lazy stream of records for memory-efficient processing.
+Reads all active (non-deleted) records from the DBF file.
 
 **Parameters:**
 - `dbf` - DBF file handle
-- `opts` - Options including `:include_deleted`, `:chunk_size`
 
 **Returns:**
-- `Stream.t()` - Lazy stream of records
+- `{:ok, [map()]}` - One field map per active record (not `%Record{}` structs)
+- `{:error, reason}` - Error reading records
+
+**Example:**
+```elixir
+{:ok, records} = Xbase.Parser.read_records(dbf)
+# => [%{"NAME" => "John Doe", "AGE" => 30}, ...]
+```
+
+Use `read_record/2` when you need the deletion flag or raw data of a record.
+
+#### `stream_records(dbf)`
+
+Creates a lazy stream of active (non-deleted) records for memory-efficient
+processing.
+
+**Parameters:**
+- `dbf` - DBF file handle
+
+**Returns:**
+- `Stream.t()` - Lazy stream of field maps (not `%Record{}` structs)
 
 **Example:**
 ```elixir
 dbf
 |> Xbase.Parser.stream_records()
-|> Stream.filter(fn record -> record.data["AGE"] > 25 end)
-|> Stream.map(fn record -> record.data["NAME"] end)
+|> Stream.filter(fn record -> record["AGE"] > 25 end)
+|> Stream.map(fn record -> record["NAME"] end)
 |> Enum.take(10)
 ```
 

@@ -4,7 +4,7 @@ defmodule Xbase.MixProject do
   def project do
     [
       app: :xbase,
-      version: "0.1.0",
+      version: "0.2.0",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -23,15 +23,16 @@ defmodule Xbase.MixProject do
           "docs/guides/memo_fields.md",
           "docs/guides/indexes.md",
           "docs/guides/streaming.md",
-          "docs/guides/performance.md"
+          "docs/guides/performance.md",
+          "CHANGELOG.md"
         ],
         groups_for_extras: [
           "Guides": ~r/docs\/guides\/.*/
         ],
         groups_for_modules: [
           "Core": [Xbase.Parser, Xbase.Types],
-          "Memo Support": [Xbase.MemoHandler, Xbase.DbtParser, Xbase.DbtWriter], 
-          "Field Handling": [Xbase.FieldParser, Xbase.FieldEncoder],
+          "Memo Support": [Xbase.MemoHandler, Xbase.DbtParser, Xbase.DbtWriter, Xbase.FptParser],
+          "Field Handling": [Xbase.FieldParser, Xbase.FieldEncoder, Xbase.CodePage],
           "Index Support": [Xbase.CdxParser]
         ]
       ]
@@ -48,6 +49,7 @@ defmodule Xbase.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:decimal, "~> 2.0 or ~> 3.0"},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}
     ]
   end
